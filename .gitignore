@@ -79,3 +79,5 @@ yarn-error.log*
 
 # Docker volumes
 docker-volumes/
+main
+z2
