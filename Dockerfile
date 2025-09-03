@@ -4,21 +4,21 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -o main .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
 
 # Final stage
 FROM alpine:latest
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 COPY --from=builder /app/main .
 
 # Labels
-LABEL maintainer="ZtoApi Contributors"
-LABEL description="ZAI to GLM-4.5 API"
+LABEL maintainer="Z2 Contributors"
+LABEL description="Z2 - Z.ai OpenAI兼容API代理"
 LABEL version="1.0.0"
 
 # Expose port
-EXPOSE 9090
+EXPOSE 7860
 
 # Run the application
 CMD ["./main"]
