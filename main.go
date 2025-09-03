@@ -657,33 +657,33 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	debugLog("收到chat completions请求")
 
-	// 验证API Key（可选）
-	authHeader := r.Header.Get("Authorization")
-	if authHeader != "" {
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			debugLog("无效的Authorization头格式")
-			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-			// 记录请求统计
-			duration := time.Since(startTime)
-			recordRequestStats(startTime, path, http.StatusUnauthorized)
-			addLiveRequest(r.Method, path, http.StatusUnauthorized, duration, "", userAgent)
-			return
-		}
+	//// 验证API Key（可选）
+	// authHeader := r.Header.Get("Authorization")
+	// if authHeader != "" {
+	// 	if !strings.HasPrefix(authHeader, "Bearer ") {
+	// 		debugLog("无效的Authorization头格式")
+	// 		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
+	// 		// 记录请求统计
+	// 		duration := time.Since(startTime)
+	// 		recordRequestStats(startTime, path, http.StatusUnauthorized)
+	// 		addLiveRequest(r.Method, path, http.StatusUnauthorized, duration, "", userAgent)
+	// 		return
+	// 	}
 
-		apiKey := strings.TrimPrefix(authHeader, "Bearer ")
-		if apiKey != DEFAULT_KEY {
-			debugLog("无效的API key: %s", apiKey)
-			http.Error(w, "Invalid API key", http.StatusUnauthorized)
-			// 记录请求统计
-			duration := time.Since(startTime)
-			recordRequestStats(startTime, path, http.StatusUnauthorized)
-			addLiveRequest(r.Method, path, http.StatusUnauthorized, duration, "", userAgent)
-			return
-		}
-		debugLog("API key验证通过")
-	} else {
-		debugLog("无Authorization头，允许匿名访问")
-	}
+	// 	apiKey := strings.TrimPrefix(authHeader, "Bearer ")
+	// 	if apiKey != DEFAULT_KEY {
+	// 		debugLog("无效的API key: %s", apiKey)
+	// 		http.Error(w, "Invalid API key", http.StatusUnauthorized)
+	// 		// 记录请求统计
+	// 		duration := time.Since(startTime)
+	// 		recordRequestStats(startTime, path, http.StatusUnauthorized)
+	// 		addLiveRequest(r.Method, path, http.StatusUnauthorized, duration, "", userAgent)
+	// 		return
+	// 	}
+	// 	debugLog("API key验证通过")
+	// } else {
+	// 	debugLog("无Authorization头，允许匿名访问")
+	// }
 
 	// 读取请求体
 	body, err := io.ReadAll(r.Body)

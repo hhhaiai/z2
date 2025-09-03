@@ -103,10 +103,10 @@ for chunk in response:
 
 ```bash
 # 获取模型列表
-curl http://localhost:7860/v1/models
+curl https://sanbo1200-z2.hf.space/v1/models
 
 # 非流式聊天
-curl -X POST http://localhost:7860/v1/chat/completions \
+curl -X POST https://sanbo1200-z2.hf.space/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-4.5",
@@ -114,7 +114,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
     "stream": false
   }'
 
-curl -X POST http://localhost:7860/api/v1/chat/completions \
+curl -X POST https://sanbo1200-z2.hf.space/api/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-4.5",
@@ -123,7 +123,7 @@ curl -X POST http://localhost:7860/api/v1/chat/completions \
   }'
 
 # 流式聊天
-curl -X POST http://localhost:7860/v1/chat/completions \
+curl -X POST https://sanbo1200-z2.hf.space/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-4.5",
@@ -131,7 +131,7 @@ curl -X POST http://localhost:7860/v1/chat/completions \
     "stream": true
   }'
 
-curl -X POST http://localhost:7860/api/v1/chat/completions \
+curl -X POST https://sanbo1200-z2.hf.space/api/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "GLM-4.5",
