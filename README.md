@@ -1,4 +1,4 @@
-# OpenAI兼容API代理 for Z.ai GLM-4.5
+# z2
 
 这是一个为Z.ai GLM-4.5模型提供OpenAI兼容API接口的代理服务器。它允许你使用标准的OpenAI API格式与Z.ai的GLM-4.5模型进行交互，支持流式和非流式响应。
 
@@ -516,3 +516,29 @@ go run main.go
 如有问题或建议，请通过以下方式联系：
 
 - 提交 [Issue](https://github.com/libaxuan/ZtoApi/issues)
+
+--------
+
+
+``` bash
+
+
+curl "http://localhost:9090/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key" \
+  -d '{
+    "model": "GLM-4.5",
+    "messages": [
+      {"role": "user", "content": "你好！请介绍一下你自己。"}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 800
+  }'
+
+
+
+
+curl "http://localhost:9090/v1/models" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-key"
+```

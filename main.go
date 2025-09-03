@@ -17,22 +17,22 @@ import (
 
 // 配置变量（从环境变量读取）
 var (
-	UPSTREAM_URL     string
-	DEFAULT_KEY      string
-	ZAI_TOKEN   string
-	MODEL_NAME       string
-	PORT             string
-	DEBUG_MODE       bool
-	DEFAULT_STREAM   bool
+	UPSTREAM_URL      string
+	DEFAULT_KEY       string
+	ZAI_TOKEN         string
+	MODEL_NAME        string
+	PORT              string
+	DEBUG_MODE        bool
+	DEFAULT_STREAM    bool
 	DASHBOARD_ENABLED bool
 )
 
 // 请求统计信息
 type RequestStats struct {
-	TotalRequests    int64
-	SuccessfulRequests int64
-	FailedRequests   int64
-	LastRequestTime  time.Time
+	TotalRequests       int64
+	SuccessfulRequests  int64
+	FailedRequests      int64
+	LastRequestTime     time.Time
 	AverageResponseTime time.Duration
 }
 
@@ -49,10 +49,10 @@ type LiveRequest struct {
 
 // 全局变量
 var (
-	stats          RequestStats
-	liveRequests   = []LiveRequest{} // 初始化为空数组，而不是 nil
-	statsMutex     sync.Mutex
-	requestsMutex  sync.Mutex
+	stats         RequestStats
+	liveRequests  = []LiveRequest{} // 初始化为空数组，而不是 nil
+	statsMutex    sync.Mutex
+	requestsMutex sync.Mutex
 )
 
 // 思考内容处理策略
@@ -79,13 +79,13 @@ func initConfig() {
 	DEFAULT_KEY = getEnv("DEFAULT_KEY", "sk-your-key")
 	ZAI_TOKEN = getEnv("ZAI_TOKEN", "")
 	MODEL_NAME = getEnv("MODEL_NAME", "GLM-4.5")
-	PORT = getEnv("PORT", "9090")
-	
+	PORT = getEnv("PORT", "7860")
+
 	// 处理PORT格式，确保有冒号前缀
 	if !strings.HasPrefix(PORT, ":") {
 		PORT = ":" + PORT
 	}
-	
+
 	DEBUG_MODE = getEnv("DEBUG_MODE", "true") == "true"
 	DEFAULT_STREAM = getEnv("DEFAULT_STREAM", "true") == "true"
 	DASHBOARD_ENABLED = getEnv("DASHBOARD_ENABLED", "true") == "true"
@@ -94,19 +94,19 @@ func initConfig() {
 // 记录请求统计信息
 func recordRequestStats(startTime time.Time, path string, status int) {
 	duration := time.Since(startTime)
-	
+
 	statsMutex.Lock()
 	defer statsMutex.Unlock()
-	
+
 	stats.TotalRequests++
 	stats.LastRequestTime = time.Now()
-	
+
 	if status >= 200 && status < 300 {
 		stats.SuccessfulRequests++
 	} else {
 		stats.FailedRequests++
 	}
-	
+
 	// 更新平均响应时间
 	if stats.TotalRequests > 0 {
 		totalDuration := stats.AverageResponseTime*time.Duration(stats.TotalRequests-1) + duration
@@ -120,7 +120,7 @@ func recordRequestStats(startTime time.Time, path string, status int) {
 func addLiveRequest(method, path string, status int, duration time.Duration, _, userAgent string) {
 	requestsMutex.Lock()
 	defer requestsMutex.Unlock()
-	
+
 	request := LiveRequest{
 		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
 		Timestamp: time.Now(),
@@ -130,9 +130,9 @@ func addLiveRequest(method, path string, status int, duration time.Duration, _, 
 		Duration:  duration.Milliseconds(),
 		UserAgent: userAgent,
 	}
-	
+
 	liveRequests = append(liveRequests, request)
-	
+
 	// 只保留最近的100条请求
 	if len(liveRequests) > 100 {
 		liveRequests = liveRequests[1:]
@@ -143,12 +143,12 @@ func addLiveRequest(method, path string, status int, duration time.Duration, _, 
 func getLiveRequestsData() []byte {
 	requestsMutex.Lock()
 	defer requestsMutex.Unlock()
-	
+
 	// 确保 liveRequests 不为 nil
 	if liveRequests == nil {
 		liveRequests = []LiveRequest{}
 	}
-	
+
 	data, err := json.Marshal(liveRequests)
 	if err != nil {
 		// 如果序列化失败，返回空数组
@@ -162,7 +162,7 @@ func getLiveRequestsData() []byte {
 func getStatsData() []byte {
 	statsMutex.Lock()
 	defer statsMutex.Unlock()
-	
+
 	data, _ := json.Marshal(stats)
 	return data
 }
@@ -184,12 +184,12 @@ func getClientIP(r *http.Request) string {
 			return strings.TrimSpace(ips[0])
 		}
 	}
-	
+
 	// 检查X-Real-IP头
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
-	
+
 	// 使用RemoteAddr
 	ip := r.RemoteAddr
 	// 移除端口号
@@ -343,13 +343,15 @@ func getAnonymousToken() (string, error) {
 func main() {
 	// 初始化配置
 	initConfig()
-	
+
 	// 注册路由
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
+	http.HandleFunc("/api/v1/models", handleModels)
+	http.HandleFunc("/api/v1/chat/completions", handleChatCompletions)
 	http.HandleFunc("/docs", handleAPIDocs)
 	http.HandleFunc("/", handleOptions)
-	
+
 	// Dashboard路由
 	if DASHBOARD_ENABLED {
 		http.HandleFunc("/dashboard", handleDashboard)
@@ -374,7 +376,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// 简单的HTML模板
 	tmpl := `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -738,7 +740,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
     </script>
 </body>
 </html>`
-	
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, tmpl)
 }
@@ -762,7 +764,7 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// API文档HTML模板
 	tmpl := `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -946,9 +948,9 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
         <section id="overview">
             <h2>概述</h2>
             <p>这是一个为Z.ai GLM-4.5模型提供OpenAI兼容API接口的代理服务器。它允许你使用标准的OpenAI API格式与Z.ai的GLM-4.5模型进行交互，支持流式和非流式响应。</p>
-            <p><strong>基础URL:</strong> <code>http://localhost:9090/v1</code></p>
+            <p><strong>基础URL:</strong> <code>http://localhost:7860/v1</code></p>
             <div class="note">
-                <strong>注意:</strong> 默认端口为9090，可以通过环境变量PORT进行修改。
+                <strong>注意:</strong> 默认端口为7860，可以通过环境变量PORT进行修改。
             </div>
         </section>
         
@@ -1088,7 +1090,7 @@ import openai
 # 配置客户端
 client = openai.OpenAI(
     api_key="your-api-key",  # 对应 DEFAULT_KEY
-    base_url="http://localhost:9090/v1"
+    base_url="http://localhost:7860/v1"
 )
 
 # 非流式请求
@@ -1115,7 +1117,7 @@ for chunk in response:
                 <h3>cURL示例</h3>
                 <div class="example">
 # 非流式请求
-curl -X POST http://localhost:9090/v1/chat/completions \
+curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key" \
   -d '{
@@ -1125,7 +1127,7 @@ curl -X POST http://localhost:9090/v1/chat/completions \
   }'
 
 # 流式请求
-curl -X POST http://localhost:9090/v1/chat/completions \
+curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-api-key" \
   -d '{
@@ -1141,7 +1143,7 @@ curl -X POST http://localhost:9090/v1/chat/completions \
 const fetch = require('node-fetch');
 
 async function chatWithGLM(message, stream = false) {
-  const response = await fetch('http://localhost:9090/v1/chat/completions', {
+  const response = await fetch('http://localhost:7860/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1250,7 +1252,7 @@ chatWithGLM('你好，请介绍一下JavaScript', false);</div>
     </script>
 </body>
 </html>`
-	
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, tmpl)
 }
@@ -1299,7 +1301,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	clientIP := getClientIP(r)
 	userAgent := r.UserAgent()
-	
+
 	setCORSHeaders(w)
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
@@ -1650,7 +1652,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 	if err := scanner.Err(); err != nil {
 		debugLog("扫描器错误: %v", err)
 	}
-	
+
 	// 记录成功请求统计
 	duration := time.Since(startTime)
 	recordRequestStats(startTime, path, http.StatusOK)
@@ -1776,7 +1778,7 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 	debugLog("非流式响应发送完成")
-	
+
 	// 记录成功请求统计
 	duration := time.Since(startTime)
 	recordRequestStats(startTime, path, http.StatusOK)
