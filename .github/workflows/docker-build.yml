@@ -1,0 +1,101 @@
+name: Build and Publish Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            suffix: -amd64
+            platform: linux/amd64
+          - arch: arm64
+            suffix: -arm64
+            platform: linux/arm64
+          - arch: armv7
+            suffix: -armv7
+            platform: linux/arm/v7
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup QEMU for cross-platform
+      uses: docker/setup-qemu-action@v3
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: image=moby/buildkit:latest
+
+    - name: Extract version and debug info
+      id: version
+      run: |
+        echo "Event: ${{ github.event_name }}"
+        echo "Ref: ${{ github.ref }}"
+        if [[ $GITHUB_REF == refs/tags/v* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          VERSION=latest
+        fi
+        echo "Extracted version: $VERSION"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Generate Docker Metadata
+      uses: docker/metadata-action@v5
+      id: meta
+      with:
+        images: |
+          ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+        tags: |
+          type=raw,value=latest
+          type=raw,value=${{ env.VERSION }}
+          type=sha,prefix=sha-,format=short
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        tags: ${{ steps.meta.outputs.tags }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Create Manifest List and Push
+      if: startsWith(github.ref, 'refs/tags/v') && matrix.suffix == ''
+      run: |
+        docker buildx imagetools create -t ghcr.io/${{ github.repository }}:latest \
+          -t ghcr.io/${{ github.repository }}:${{ env.VERSION }} \
+          ghcr.io/${{ github.repository }}-amd64:latest \
+          ghcr.io/${{ github.repository }}-amd64:${{ env.VERSION }} \
+          ghcr.io/${{ github.repository }}-arm64:latest \
+          ghcr.io/${{ github.repository }}-arm64:${{ env.VERSION }} \
+          ghcr.io/${{ github.repository }}-armv7:latest \
+          ghcr.io/${{ github.repository }}-armv7:${{ env.VERSION }}
+
+    - name: Build Result Summary
+      if: always()
+      run: |
+        echo "Platform: ${{ matrix.platform }}"
+        echo "Generated tags: ${{ steps.meta.outputs.tags }}"
+        echo "Pushed: ${{ startsWith(github.ref, 'refs/tags/v') }}"

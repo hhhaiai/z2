@@ -50,11 +50,23 @@
 
 ### Docker部署
 
+**本地构建：**
 ```bash
 # 构建并运行
 docker build -t z2-api .
 docker run -p 7860:7860 z2-api
 ```
+
+**使用预构建镜像：**
+```bash
+# 使用GitHub Container Registry的镜像
+docker run -p 7860:7860 ghcr.io/your-username/z2:latest
+```
+
+**GitHub Actions自动构建：**
+- 推送tag时自动构建多架构Docker镜像（amd64、arm64、armv7）
+- 镜像发布到GitHub Container Registry
+- 支持版本标签和latest标签
 
 ## 📖 使用方法
 
