@@ -17,15 +17,17 @@ import (
 
 // 配置变量（从环境变量读取）
 var (
-	UPSTREAM_URL      string
-	DEFAULT_KEY       string
-	ZAI_TOKEN         string
-	MODEL_NAME        string
-	PORT              string
-	DEBUG_MODE        bool
-	DEFAULT_STREAM    bool
-	DASHBOARD_ENABLED bool
-	ENABLE_THINKING   bool
+	UPSTREAM_URL              string
+	DEFAULT_KEY               string
+	ZAI_TOKEN                 string
+	MODEL_NAME                string // 未使用，因为现在动态获取
+	PORT                      string
+	DEBUG_MODE                bool
+	DEFAULT_STREAM            bool
+	DASHBOARD_ENABLED         bool
+	ENABLE_THINKING           bool
+	MODELS_URL                string // 新增：模型列表URL
+	DEFAULT_UPSTREAM_MODEL_ID string // 新增：默认上游模型ID
 )
 
 // 请求统计信息
@@ -48,157 +50,22 @@ type LiveRequest struct {
 	UserAgent string    `json:"user_agent"`
 }
 
-// 全局变量
-var (
-	stats         RequestStats
-	liveRequests  = []LiveRequest{} // 初始化为空数组，而不是 nil
-	statsMutex    sync.Mutex
-	requestsMutex sync.Mutex
-)
-
-// 思考内容处理策略
-const (
-	THINK_TAGS_MODE = "strip" // strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
-)
-
-// 伪装前端头部（来自抓包）
-const (
-	X_FE_VERSION   = "prod-fe-1.0.70"
-	BROWSER_UA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
-	SEC_CH_UA      = "\"Not;A=Brand\";v=\"99\", \"Microsoft Edge\";v=\"139\", \"Chromium\";v=\"139\""
-	SEC_CH_UA_MOB  = "?0"
-	SEC_CH_UA_PLAT = "\"Windows\""
-	ORIGIN_BASE    = "https://chat.z.ai"
-)
-
-// 匿名token开关
-const ANON_TOKEN_ENABLED = true
-
-// 从环境变量初始化配置
-func initConfig() {
-	UPSTREAM_URL = getEnv("UPSTREAM_URL", "https://chat.z.ai/api/chat/completions")
-	DEFAULT_KEY = getEnv("DEFAULT_KEY", "sk-your-key")
-	ZAI_TOKEN = getEnv("ZAI_TOKEN", "")
-	MODEL_NAME = getEnv("MODEL_NAME", "GLM-4.5")
-	PORT = getEnv("PORT", "7860")
-
-	// 处理PORT格式，确保有冒号前缀
-	if !strings.HasPrefix(PORT, ":") {
-		PORT = ":" + PORT
-	}
-
-	DEBUG_MODE = getEnv("DEBUG_MODE", "true") == "true"
-	DEFAULT_STREAM = getEnv("DEFAULT_STREAM", "true") == "true"
-	DASHBOARD_ENABLED = getEnv("DASHBOARD_ENABLED", "true") == "true"
-	ENABLE_THINKING = getEnv("ENABLE_THINKING", "true") == "true"
+// 上游模型响应结构 (新增)
+type UpstreamModelsResponse struct {
+	Object string          `json:"object"`
+	Data   []UpstreamModel `json:"data"`
 }
 
-// 记录请求统计信息
-func recordRequestStats(startTime time.Time, path string, status int) {
-	duration := time.Since(startTime)
-
-	statsMutex.Lock()
-	defer statsMutex.Unlock()
-
-	stats.TotalRequests++
-	stats.LastRequestTime = time.Now()
-
-	if status >= 200 && status < 300 {
-		stats.SuccessfulRequests++
-	} else {
-		stats.FailedRequests++
-	}
-
-	// 更新平均响应时间
-	if stats.TotalRequests > 0 {
-		totalDuration := stats.AverageResponseTime*time.Duration(stats.TotalRequests-1) + duration
-		stats.AverageResponseTime = totalDuration / time.Duration(stats.TotalRequests)
-	} else {
-		stats.AverageResponseTime = duration
-	}
-}
-
-// 添加实时请求信息
-func addLiveRequest(method, path string, status int, duration time.Duration, _, userAgent string) {
-	requestsMutex.Lock()
-	defer requestsMutex.Unlock()
-
-	request := LiveRequest{
-		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
-		Timestamp: time.Now(),
-		Method:    method,
-		Path:      path,
-		Status:    status,
-		Duration:  duration.Milliseconds(),
-		UserAgent: userAgent,
-	}
-
-	liveRequests = append(liveRequests, request)
-
-	// 只保留最近的100条请求
-	if len(liveRequests) > 100 {
-		liveRequests = liveRequests[1:]
-	}
-}
-
-// 获取实时请求数据（用于SSE）
-func getLiveRequestsData() []byte {
-	requestsMutex.Lock()
-	defer requestsMutex.Unlock()
-
-	// 确保 liveRequests 不为 nil
-	if liveRequests == nil {
-		liveRequests = []LiveRequest{}
-	}
-
-	data, err := json.Marshal(liveRequests)
-	if err != nil {
-		// 如果序列化失败，返回空数组
-		emptyArray := []LiveRequest{}
-		data, _ = json.Marshal(emptyArray)
-	}
-	return data
-}
-
-// 获取统计数据（用于SSE）
-func getStatsData() []byte {
-	statsMutex.Lock()
-	defer statsMutex.Unlock()
-
-	data, _ := json.Marshal(stats)
-	return data
-}
-
-// 获取环境变量，如果不存在则返回默认值
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
-}
-
-// 获取客户端IP地址
-func getClientIP(r *http.Request) string {
-	// 检查X-Forwarded-For头
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
-		}
-	}
-
-	// 检查X-Real-IP头
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// 使用RemoteAddr
-	ip := r.RemoteAddr
-	// 移除端口号
-	if strings.Contains(ip, ":") {
-		ip = strings.Split(ip, ":")[0]
-	}
-	return ip
+type UpstreamModel struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+	Info    struct {
+		IsActive  bool  `json:"is_active"`
+		CreatedAt int64 `json:"created_at"`
+	} `json:"info"`
 }
 
 // OpenAI 请求结构
@@ -292,10 +159,318 @@ type ModelsResponse struct {
 }
 
 type Model struct {
-	ID      string `json:"id"`
+	ID      string `json:"id"` // 保持ID字段
 	Object  string `json:"object"`
+	Name    string `json:"name"` // 新增Name字段，用于显示
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
+}
+
+// 全局变量
+var (
+	stats         RequestStats
+	liveRequests  = []LiveRequest{} // 初始化为空数组，而不是 nil
+	statsMutex    sync.Mutex
+	requestsMutex sync.Mutex
+	modelsCache   []Model      // 新增：缓存模型列表
+	modelsMutex   sync.RWMutex // 新增：保护模型缓存的读写锁
+)
+
+// 思考内容处理策略
+const (
+	THINK_TAGS_MODE = "strip" // strip: 去除<details>标签；think: 转为<think>标签；raw: 保留原样
+)
+
+// 伪装前端头部（来自抓包）
+const (
+	X_FE_VERSION   = "prod-fe-1.0.70"
+	BROWSER_UA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36 Edg/139.0.0.0"
+	SEC_CH_UA      = "\"Not;A=Brand\";v=\"99\", \"Microsoft Edge\";v=\"139\", \"Chromium\";v=\"139\""
+	SEC_CH_UA_MOB  = "?0"
+	SEC_CH_UA_PLAT = "\"Windows\""
+	ORIGIN_BASE    = "https://chat.z.ai"
+)
+
+// 匿名token开关
+const ANON_TOKEN_ENABLED = true
+
+// 从环境变量初始化配置
+func initConfig() {
+	UPSTREAM_URL = getEnv("UPSTREAM_URL", "https://chat.z.ai/api/chat/completions")
+	DEFAULT_KEY = getEnv("DEFAULT_KEY", "sk-your-key")
+	ZAI_TOKEN = getEnv("ZAI_TOKEN", "")
+	MODEL_NAME = getEnv("MODEL_NAME", "GLM-4.5") // 未使用，但保留
+	PORT = getEnv("PORT", "7860")
+	MODELS_URL = getEnv("MODELS_URL", "https://chat.z.ai/api/models")                // 新增
+	DEFAULT_UPSTREAM_MODEL_ID = getEnv("DEFAULT_UPSTREAM_MODEL_ID", "0727-360B-API") // 新增
+	// 处理PORT格式，确保有冒号前缀
+	if !strings.HasPrefix(PORT, ":") {
+		PORT = ":" + PORT
+	}
+	DEBUG_MODE = getEnv("DEBUG_MODE", "true") == "true"
+	DEFAULT_STREAM = getEnv("DEFAULT_STREAM", "true") == "true"
+	DASHBOARD_ENABLED = getEnv("DASHBOARD_ENABLED", "true") == "true"
+	ENABLE_THINKING = getEnv("ENABLE_THINKING", "true") == "true"
+}
+
+// 记录请求统计信息
+func recordRequestStats(startTime time.Time, path string, status int) {
+	duration := time.Since(startTime)
+	statsMutex.Lock()
+	defer statsMutex.Unlock()
+	stats.TotalRequests++
+	stats.LastRequestTime = time.Now()
+	if status >= 200 && status < 300 {
+		stats.SuccessfulRequests++
+	} else {
+		stats.FailedRequests++
+	}
+	// 更新平均响应时间
+	if stats.TotalRequests > 0 {
+		totalDuration := stats.AverageResponseTime*time.Duration(stats.TotalRequests-1) + duration
+		stats.AverageResponseTime = totalDuration / time.Duration(stats.TotalRequests)
+	} else {
+		stats.AverageResponseTime = duration
+	}
+}
+
+// 添加实时请求信息
+func addLiveRequest(method, path string, status int, duration time.Duration, _, userAgent string) {
+	requestsMutex.Lock()
+	defer requestsMutex.Unlock()
+	request := LiveRequest{
+		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		Timestamp: time.Now(),
+		Method:    method,
+		Path:      path,
+		Status:    status,
+		Duration:  duration.Milliseconds(),
+		UserAgent: userAgent,
+	}
+	liveRequests = append(liveRequests, request)
+	// 只保留最近的100条请求
+	if len(liveRequests) > 100 {
+		liveRequests = liveRequests[1:]
+	}
+}
+
+// 获取实时请求数据（用于SSE）
+func getLiveRequestsData() []byte {
+	requestsMutex.Lock()
+	defer requestsMutex.Unlock()
+	// 确保 liveRequests 不为 nil
+	if liveRequests == nil {
+		liveRequests = []LiveRequest{}
+	}
+	data, err := json.Marshal(liveRequests)
+	if err != nil {
+		// 如果序列化失败，返回空数组
+		emptyArray := []LiveRequest{}
+		data, _ = json.Marshal(emptyArray)
+	}
+	return data
+}
+
+// 获取统计数据（用于SSE）
+func getStatsData() []byte {
+	statsMutex.Lock()
+	defer statsMutex.Unlock()
+	data, _ := json.Marshal(stats)
+	return data
+}
+
+// 获取环境变量，如果不存在则返回默认值
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// 获取客户端IP地址
+func getClientIP(r *http.Request) string {
+	// 检查X-Forwarded-For头
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		ips := strings.Split(xff, ",")
+		if len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+	// 检查X-Real-IP头
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+	// 使用RemoteAddr
+	ip := r.RemoteAddr
+	// 移除端口号
+	if strings.Contains(ip, ":") {
+		ip = strings.Split(ip, ":")[0]
+	}
+	return ip
+}
+
+// 检查字符是否为英文字母
+func isEnglishLetter(r rune) bool {
+	return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+}
+
+// 检查字符串是否包含英文字母
+func hasEnglishLetter(s string) bool {
+	for _, r := range s {
+		if isEnglishLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// 检查字符串是否为纯数字
+func isDigit(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// 格式化模型名
+func formatModelName(name string) string {
+	if name == "" {
+		return ""
+	}
+	parts := strings.Split(name, "-")
+	if len(parts) == 1 {
+		return strings.ToUpper(parts[0])
+	}
+	formatted := []string{strings.ToUpper(parts[0])}
+	for _, p := range parts[1:] {
+		if p == "" {
+			formatted = append(formatted, "")
+		} else if isDigit(p) {
+			formatted = append(formatted, p)
+		} else if hasEnglishLetter(p) {
+			// Use Title for better capitalization of letters
+			formatted = append(formatted, strings.Title(p))
+		} else {
+			formatted = append(formatted, p)
+		}
+	}
+	return strings.Join(formatted, "-")
+}
+
+// 获取模型列表 (新增)
+func getModels() []Model {
+	modelsMutex.RLock()
+	cachedModels := modelsCache
+	modelsMutex.RUnlock()
+
+	if cachedModels != nil {
+		return cachedModels
+	}
+
+	// 获取token
+	token := ZAI_TOKEN
+	if ANON_TOKEN_ENABLED {
+		if t, err := getAnonymousToken(); err == nil {
+			token = t
+		}
+	}
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:       10,
+			IdleConnTimeout:    30 * time.Second,
+			DisableCompression: false,
+		},
+	}
+
+	req, err := http.NewRequest("GET", MODELS_URL, nil)
+	if err != nil {
+		debugLog("创建模型请求失败: %v", err)
+		return getDefaultModels()
+	}
+
+	// 设置请求头
+	req.Header.Set("User-Agent", BROWSER_UA)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	req.Header.Set("X-FE-Version", X_FE_VERSION)
+	req.Header.Set("sec-ch-ua", SEC_CH_UA)
+	req.Header.Set("sec-ch-ua-mobile", SEC_CH_UA_MOB)
+	req.Header.Set("sec-ch-ua-platform", SEC_CH_UA_PLAT)
+	req.Header.Set("Origin", ORIGIN_BASE)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		debugLog("获取模型列表失败: %v", err)
+		return getDefaultModels()
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			debugLog("关闭模型响应体失败: %v", closeErr)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		debugLog("模型列表响应状态异常: %d", resp.StatusCode)
+		return getDefaultModels()
+	}
+
+	var upstreamResp UpstreamModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&upstreamResp); err != nil {
+		debugLog("解析模型列表失败: %v", err)
+		return getDefaultModels()
+	}
+
+	var models []Model
+	for _, m := range upstreamResp.Data {
+		if !m.Info.IsActive {
+			continue
+		}
+
+		modelName := m.Name
+		if modelName == "" || !isEnglishLetter([]rune(modelName)[0]) { // 确保Name不为空且首字符是字母
+			modelName = formatModelName(m.ID)
+		}
+
+		models = append(models, Model{
+			ID:      m.ID,
+			Object:  "model",
+			Name:    modelName,        // 使用格式化后的名称或原始Name
+			Created: m.Info.CreatedAt, // 使用上游的CreatedAt
+			OwnedBy: "z.ai",
+		})
+	}
+
+	if len(models) == 0 {
+		return getDefaultModels()
+	}
+
+	// 更新缓存
+	modelsMutex.Lock()
+	modelsCache = models
+	modelsMutex.Unlock()
+
+	debugLog("获取到%d个模型", len(models))
+	return models
+}
+
+// 获取默认模型列表（获取失败时使用）
+func getDefaultModels() []Model {
+	return []Model{
+		{
+			ID:      "0727-360B-API", // 与DEFAULT_UPSTREAM_MODEL_ID一致
+			Object:  "model",
+			Name:    "GLM-4.5", // 或根据ID格式化
+			Created: time.Now().Unix(),
+			OwnedBy: "z.ai",
+		},
+	}
 }
 
 // debug日志函数
@@ -322,7 +497,6 @@ func getAnonymousToken() (string, error) {
 	req.Header.Set("sec-ch-ua-platform", SEC_CH_UA_PLAT)
 	req.Header.Set("Origin", ORIGIN_BASE)
 	req.Header.Set("Referer", ORIGIN_BASE+"/")
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -346,20 +520,16 @@ func getAnonymousToken() (string, error) {
 func main() {
 	// 初始化配置
 	initConfig()
-
 	// 注册路由
 	http.HandleFunc("/v1/models", handleModels)
 	http.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	http.HandleFunc("/docs", handleAPIDocs)
 	// http.HandleFunc("/", handleOptions)
 	http.HandleFunc("/", handleDashboard)
-
 	http.HandleFunc("/api/v1/models", handleModels)
 	http.HandleFunc("/api/v1/chat/completions", handleChatCompletions)
-
 	http.HandleFunc("/hf/v1/models", handleModels)
 	http.HandleFunc("/hf/v1/chat/completions", handleChatCompletions)
-
 	// Dashboard路由
 	if DASHBOARD_ENABLED {
 		http.HandleFunc("/dashboard", handleDashboard)
@@ -367,9 +537,8 @@ func main() {
 		http.HandleFunc("/dashboard/requests", handleDashboardRequests)
 		log.Printf("Dashboard已启用，访问地址: http://localhost%s/dashboard", PORT)
 	}
-
 	log.Printf("OpenAI兼容API服务器启动在端口%s", PORT)
-	log.Printf("模型: %s", MODEL_NAME)
+	log.Printf("模型: %s", MODEL_NAME) // 这里可能需要调整显示逻辑，因为现在模型是动态的
 	log.Printf("上游: %s", UPSTREAM_URL)
 	log.Printf("Debug模式: %v", DEBUG_MODE)
 	log.Printf("默认流式响应: %v", DEFAULT_STREAM)
@@ -385,7 +554,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	// 简单的HTML模板
 	tmpl := `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -498,7 +666,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 <body>
     <div class="container">
         <h1>API调用看板</h1>
-
         <div class="stats-container">
             <div class="stat-card">
                 <div class="stat-value" id="total-requests">0</div>
@@ -517,12 +684,10 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 <div class="stat-label">平均响应时间</div>
             </div>
         </div>
-
         <div class="chart-container">
             <h2>请求统计图表</h2>
             <canvas id="requestsChart"></canvas>
         </div>
-
         <div class="requests-container">
             <h2>实时请求</h2>
             <table class="requests-table">
@@ -546,12 +711,10 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 <button id="next-page" disabled>下一页</button>
             </div>
         </div>
-
         <div class="refresh-info">
             数据每5秒自动刷新一次
         </div>
     </div>
-
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         // 全局变量
@@ -559,7 +722,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
         let currentPage = 1;
         const itemsPerPage = 10;
         let requestsChart = null;
-
         // 更新统计数据
         function updateStats() {
             fetch('/dashboard/stats')
@@ -572,7 +734,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 })
                 .catch(error => console.error('Error fetching stats:', error));
         }
-
         // 更新请求列表
         function updateRequests() {
             fetch('/dashboard/requests')
@@ -583,42 +744,33 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                         console.error('返回的数据不是数组:', data);
                         return;
                     }
-
                     // 保存所有请求数据
                     allRequests = data;
-
                     // 按时间倒序排列
                     allRequests.sort((a, b) => {
                         const timeA = new Date(a.timestamp);
                         const timeB = new Date(b.timestamp);
                         return timeB - timeA;
                     });
-
                     // 更新表格
                     updateTable();
-
                     // 更新图表
                     updateChart();
-
                     // 更新分页信息
                     updatePagination();
                 })
                 .catch(error => console.error('Error fetching requests:', error));
         }
-
         // 更新表格显示
         function updateTable() {
             const tbody = document.getElementById('requests-tbody');
             tbody.innerHTML = '';
-
             // 计算当前页的数据范围
             const startIndex = (currentPage - 1) * itemsPerPage;
             const endIndex = startIndex + itemsPerPage;
             const currentRequests = allRequests.slice(startIndex, endIndex);
-
             currentRequests.forEach(request => {
                 const row = document.createElement('tr');
-
                 // 格式化时间 - 检查时间戳是否有效
                 let timeStr = "Invalid Date";
                 if (request.timestamp) {
@@ -631,41 +783,27 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                         console.error("时间格式化错误:", e);
                     }
                 }
-
                 // 状态样式
                 const statusClass = request.status >= 200 && request.status < 300 ? 'status-success' : 'status-error';
-
                 // 截断 User Agent，避免过长
                 let userAgent = request.user_agent || "undefined";
                 if (userAgent.length > 30) {
                     userAgent = userAgent.substring(0, 30) + "...";
                 }
-
-                row.innerHTML =
-                   "<td>" + timeStr + "</td>" +
-                   "<td>GLM-4.5</td>" +
-                   "<td>" + (request.method || "undefined") + "</td>" +
-                   "<td class=\"" + statusClass + "\">" + (request.status || "undefined") + "</td>" +
-                   "<td>" + ((request.duration / 1000).toFixed(2) || "undefined") + "s</td>" +
-                   "<td title=\"" + (request.user_agent || "") + "\">" + userAgent + "</td>";
-
+                row.innerHTML = "<td>" + timeStr + "</td>" + "<td>GLM-4.5</td>" + "<td>" + (request.method || "undefined") + "</td>" + "<td class=\"" + statusClass + "\">" + (request.status || "undefined") + "</td>" + "<td>" + ((request.duration / 1000).toFixed(2) || "undefined") + "s</td>" + "<td title=\"" + (request.user_agent || "") + "\">" + userAgent + "</td>";
                 tbody.appendChild(row);
             });
         }
-
         // 更新分页信息
         function updatePagination() {
             const totalPages = Math.ceil(allRequests.length / itemsPerPage);
             document.getElementById('page-info').textContent = "第 " + currentPage + " 页，共 " + totalPages + " 页";
-
             document.getElementById('prev-page').disabled = currentPage <= 1;
             document.getElementById('next-page').disabled = currentPage >= totalPages;
         }
-
         // 更新图表
         function updateChart() {
             const ctx = document.getElementById('requestsChart').getContext('2d');
-
             // 准备图表数据 - 最近20条请求的响应时间
             const chartData = allRequests.slice(0, 20).reverse();
             const labels = chartData.map(req => {
@@ -673,12 +811,10 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 return time.toLocaleTimeString();
             });
             const responseTimes = chartData.map(req => req.duration);
-
             // 如果图表已存在，先销毁
             if (requestsChart) {
                 requestsChart.destroy();
             }
-
             // 创建新图表
             requestsChart = new Chart(ctx, {
                 type: 'line',
@@ -720,7 +856,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 }
             });
         }
-
         // 分页按钮事件
         document.getElementById('prev-page').addEventListener('click', function() {
             if (currentPage > 1) {
@@ -729,7 +864,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 updatePagination();
             }
         });
-
         document.getElementById('next-page').addEventListener('click', function() {
             const totalPages = Math.ceil(allRequests.length / itemsPerPage);
             if (currentPage < totalPages) {
@@ -738,18 +872,15 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
                 updatePagination();
             }
         });
-
         // 初始加载
         updateStats();
         updateRequests();
-
         // 定时刷新
         setInterval(updateStats, 5000);
         setInterval(updateRequests, 5000);
     </script>
 </body>
 </html>`
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, tmpl)
 }
@@ -773,7 +904,6 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	// API文档HTML模板
 	tmpl := `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -937,7 +1067,6 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
 <body>
     <div class="container">
         <h1>ZtoApi 文档</h1>
-
         <div class="toc">
             <h2>目录</h2>
             <ul>
@@ -953,7 +1082,6 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
                 <li><a href="#error-handling">错误处理</a></li>
             </ul>
         </div>
-
         <section id="overview">
             <h2>概述</h2>
             <p>这是一个为Z.ai GLM-4.5模型提供OpenAI兼容API接口的代理服务器。它允许你使用标准的OpenAI API格式与Z.ai的GLM-4.5模型进行交互，支持流式和非流式响应。</p>
@@ -962,7 +1090,6 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
                 <strong>注意:</strong> 默认端口为7860，可以通过环境变量PORT进行修改。
             </div>
         </section>
-
         <section id="authentication">
             <h2>身份验证</h2>
             <p>所有API请求都需要在请求头中包含有效的API密钥进行身份验证：</p>
@@ -970,10 +1097,8 @@ func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
 Authorization: Bearer your-api-key</div>
             <p>默认的API密钥为 <code>sk-your-key</code>，可以通过环境变量 <code>DEFAULT_KEY</code> 进行修改。</p>
         </section>
-
         <section id="endpoints">
             <h2>API端点</h2>
-
             <div class="endpoint" id="models">
                 <h3>获取模型列表</h3>
                 <div>
@@ -1000,7 +1125,6 @@ Authorization: Bearer your-api-key</div>
   ]
 }</div>
             </div>
-
             <div class="endpoint" id="chat-completions">
                 <h3>聊天完成</h3>
                 <div>
@@ -1087,47 +1211,38 @@ Authorization: Bearer your-api-key</div>
                 </div>
             </div>
         </section>
-
         <section id="examples">
             <h2>使用示例</h2>
-
             <div class="tab">
                 <button class="tablinks active" onclick="openTab(event, 'python-tab')">Python</button>
                 <button class="tablinks" onclick="openTab(event, 'curl-tab')">cURL</button>
                 <button class="tablinks" onclick="openTab(event, 'javascript-tab')">JavaScript</button>
             </div>
-
             <div id="python-tab" class="tabcontent" style="display: block;">
                 <h3>Python示例</h3>
                 <div class="example">
 import openai
-
 # 配置客户端
 client = openai.OpenAI(
     api_key="your-api-key",  # 对应 DEFAULT_KEY
     base_url="http://localhost:7860/v1"
 )
-
 # 非流式请求
 response = client.chat.completions.create(
     model="GLM-4.5",
     messages=[{"role": "user", "content": "你好，请介绍一下自己"}]
 )
-
 print(response.choices[0].message.content)
-
 # 流式请求
 response = client.chat.completions.create(
     model="GLM-4.5",
     messages=[{"role": "user", "content": "请写一首关于春天的诗"}],
     stream=True
 )
-
 for chunk in response:
     if chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="")</div>
             </div>
-
             <div id="curl-tab" class="tabcontent">
                 <h3>cURL示例</h3>
                 <div class="example">
@@ -1140,7 +1255,6 @@ curl -X POST http://localhost:7860/v1/chat/completions \
     "messages": [{"role": "user", "content": "你好"}],
     "stream": false
   }'
-
 # 流式请求
 curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -1150,7 +1264,6 @@ curl -X POST http://localhost:7860/v1/chat/completions \
     "messages": [{"role": "user", "content": "你好"}],
     "stream": true
   }'</div>
-
 # 启用思考功能的请求
 curl -X POST http://localhost:7860/v1/chat/completions \
   -H "Content-Type: application/json" \
@@ -1161,12 +1274,10 @@ curl -X POST http://localhost:7860/v1/chat/completions \
     "enable_thinking": true
   }'
             </div>
-
             <div id="javascript-tab" class="tabcontent">
                 <h3>JavaScript示例</h3>
                 <div class="example">
 const fetch = require('node-fetch');
-
 async function chatWithGLM(message, stream = false) {
   const response = await fetch('http://localhost:7860/v1/chat/completions', {
     method: 'POST',
@@ -1180,19 +1291,15 @@ async function chatWithGLM(message, stream = false) {
       stream: stream
     })
   });
-
   if (stream) {
     // 处理流式响应
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       const chunk = decoder.decode(value);
       const lines = chunk.split('\n');
-
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const data = line.slice(6);
@@ -1200,7 +1307,6 @@ async function chatWithGLM(message, stream = false) {
             console.log('\n流式响应完成');
             return;
           }
-
           try {
             const parsed = JSON.parse(data);
             const content = parsed.choices[0]?.delta?.content;
@@ -1219,12 +1325,10 @@ async function chatWithGLM(message, stream = false) {
     console.log(data.choices[0].message.content);
   }
 }
-
 // 使用示例
 chatWithGLM('你好，请介绍一下JavaScript', false);</div>
             </div>
         </section>
-
         <section id="error-handling">
             <h2>错误处理</h2>
             <p>API使用标准HTTP状态码来表示请求的成功或失败：</p>
@@ -1259,7 +1363,6 @@ chatWithGLM('你好，请介绍一下JavaScript', false);</div>
             </div>
         </section>
     </div>
-
     <script>
         function openTab(evt, tabName) {
             var i, tabcontent, tablinks;
@@ -1277,7 +1380,6 @@ chatWithGLM('你好，请介绍一下JavaScript', false);</div>
     </script>
 </body>
 </html>`
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, tmpl)
 }
@@ -1298,6 +1400,7 @@ func setCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 }
 
+// 修改 handleModels 函数，调用 getModels
 func handleModels(w http.ResponseWriter, r *http.Request) {
 	setCORSHeaders(w)
 	if r.Method == "OPTIONS" {
@@ -1307,14 +1410,7 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 
 	response := ModelsResponse{
 		Object: "list",
-		Data: []Model{
-			{
-				ID:      MODEL_NAME,
-				Object:  "model",
-				Created: time.Now().Unix(),
-				OwnedBy: "zai",
-			},
-		},
+		Data:   getModels(), // 调用 getModels 获取列表
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1326,13 +1422,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	clientIP := getClientIP(r)
 	userAgent := r.UserAgent()
-
 	setCORSHeaders(w)
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-
 	debugLog("收到chat completions请求")
 
 	// 验证API Key
@@ -1346,7 +1440,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		addLiveRequest(r.Method, path, http.StatusUnauthorized, duration, "", userAgent)
 		return
 	}
-
 	//apiKey := strings.TrimPrefix(authHeader, "Bearer ")
 	//if apiKey != DEFAULT_KEY {
 	//	debugLog("无效的API key: %s", apiKey)
@@ -1359,7 +1452,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	//}
 	//
 	//debugLog("API key验证通过")
-
 	// 读取请求体
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -1371,7 +1463,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		addLiveRequest(r.Method, path, http.StatusBadRequest, duration, "", userAgent)
 		return
 	}
-
 	// 解析请求
 	var req OpenAIRequest
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -1384,13 +1475,28 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- 模型映射逻辑 ---
+	models := getModels()
+	modelExists := false
+	for _, m := range models {
+		if m.ID == req.Model {
+			modelExists = true
+			break
+		}
+	}
+	actualUpstreamModelID := req.Model // 默认使用请求的模型ID
+	if !modelExists {
+		debugLog("未知模型 '%s'，映射到默认上游模型 '%s'", req.Model, DEFAULT_UPSTREAM_MODEL_ID)
+		actualUpstreamModelID = DEFAULT_UPSTREAM_MODEL_ID // 映射到默认模型
+	}
+	// --- 模型映射逻辑结束 ---
+
 	// 如果客户端没有明确指定stream参数，使用默认值
 	if !bytes.Contains(body, []byte(`"stream"`)) {
 		req.Stream = DEFAULT_STREAM
 		debugLog("客户端未指定stream参数，使用默认值: %v", DEFAULT_STREAM)
 	}
-
-	debugLog("请求解析成功 - 模型: %s, 流式: %v, 消息数: %d", req.Model, req.Stream, len(req.Messages))
+	debugLog("请求解析成功 - 模型: %s (映射后: %s), 流式: %v, 消息数: %d", req.Model, actualUpstreamModelID, req.Stream, len(req.Messages))
 
 	// 生成会话相关ID
 	chatID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix())
@@ -1405,12 +1511,12 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		debugLog("使用环境变量中的思考功能设置: %v", enableThinking)
 	}
 
-	// 构造上游请求
+	// 构造上游请求 - 使用映射后的模型ID
 	upstreamReq := UpstreamRequest{
 		Stream:   true, // 总是使用流式从上游获取
 		ChatID:   chatID,
 		ID:       msgID,
-		Model:    "0727-360B-API", // 上游实际模型ID
+		Model:    actualUpstreamModelID, // 使用映射后的ID
 		Messages: req.Messages,
 		Params:   map[string]interface{}{},
 		Features: map[string]interface{}{
@@ -1425,7 +1531,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ID      string `json:"id"`
 			Name    string `json:"name"`
 			OwnedBy string `json:"owned_by"`
-		}{ID: "0727-360B-API", Name: "GLM-4.5", OwnedBy: "openai"},
+		}{ID: actualUpstreamModelID, Name: req.Model, OwnedBy: "openai"}, // ModelItem.ID也用映射后的，Name可以保留原始请求的ID或按需设置
 		ToolServers: []string{},
 		Variables: map[string]string{
 			"{{USER_NAME}}":        "User",
@@ -1450,11 +1556,11 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 调用上游API
+	// 调用上游API，传入原始请求的模型ID用于响应
 	if req.Stream {
-		handleStreamResponseWithIDs(w, upstreamReq, chatID, authToken, startTime, path, clientIP, userAgent)
+		handleStreamResponseWithIDs(w, upstreamReq, chatID, authToken, startTime, path, clientIP, userAgent, req.Model) // 传入原始模型ID
 	} else {
-		handleNonStreamResponseWithIDs(w, upstreamReq, chatID, authToken, startTime, path, clientIP, userAgent)
+		handleNonStreamResponseWithIDs(w, upstreamReq, chatID, authToken, startTime, path, clientIP, userAgent, req.Model) // 传入原始模型ID
 	}
 }
 
@@ -1464,16 +1570,13 @@ func callUpstreamWithHeaders(upstreamReq UpstreamRequest, refererChatID string, 
 		debugLog("上游请求序列化失败: %v", err)
 		return nil, err
 	}
-
 	debugLog("调用上游API: %s", UPSTREAM_URL)
 	debugLog("上游请求体: %s", string(reqBody))
-
 	req, err := http.NewRequest("POST", UPSTREAM_URL, bytes.NewBuffer(reqBody))
 	if err != nil {
 		debugLog("创建HTTP请求失败: %v", err)
 		return nil, err
 	}
-
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", BROWSER_UA)
@@ -1485,21 +1588,19 @@ func callUpstreamWithHeaders(upstreamReq UpstreamRequest, refererChatID string, 
 	req.Header.Set("X-FE-Version", X_FE_VERSION)
 	req.Header.Set("Origin", ORIGIN_BASE)
 	req.Header.Set("Referer", ORIGIN_BASE+"/c/"+refererChatID)
-
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		debugLog("上游请求失败: %v", err)
 		return nil, err
 	}
-
 	debugLog("上游响应状态: %d %s", resp.StatusCode, resp.Status)
 	return resp, nil
 }
 
-func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequest, chatID string, authToken string, startTime time.Time, path string, clientIP, userAgent string) {
-	debugLog("开始处理流式响应 (chat_id=%s)", chatID)
-
+// 修改 handleStreamResponseWithIDs 函数，增加原始模型ID参数
+func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequest, chatID string, authToken string, startTime time.Time, path string, clientIP, userAgent string, originalModelID string) { // 增加 originalModelID 参数
+	debugLog("开始处理流式响应 (chat_id=%s, original_model=%s)", chatID, originalModelID)
 	resp, err := callUpstreamWithHeaders(upstreamReq, chatID, authToken)
 	if err != nil {
 		debugLog("调用上游失败: %v", err)
@@ -1511,7 +1612,6 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 		return
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		debugLog("上游返回错误状态: %d", resp.StatusCode)
 		// 读取错误响应体
@@ -1546,7 +1646,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 		}
 		// 处理每行前缀 "> "（包括起始位置）
 		s = strings.TrimPrefix(s, "> ")
-		s = strings.ReplaceAll(s, "\n> ", "\n")
+		s = strings.ReplaceAll(s, "\n> ", "\n") // <--- 修正换行符
 		return strings.TrimSpace(s)
 	}
 
@@ -1554,19 +1654,18 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
 		return
 	}
 
-	// 发送第一个chunk（role）
+	// 发送第一个chunk（role），使用原始模型ID
 	firstChunk := OpenAIResponse{
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 		Object:  "chat.completion.chunk",
 		Created: time.Now().Unix(),
-		Model:   MODEL_NAME,
+		Model:   originalModelID, // 使用原始模型ID
 		Choices: []Choice{
 			{
 				Index: 0,
@@ -1581,22 +1680,17 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 	debugLog("开始读取上游SSE流")
 	scanner := bufio.NewScanner(resp.Body)
 	lineCount := 0
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineCount++
-
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
-
 		dataStr := strings.TrimPrefix(line, "data: ")
 		if dataStr == "" {
 			continue
 		}
-
 		debugLog("收到SSE数据 (第%d行): %s", lineCount, dataStr)
-
 		var upstreamData UpstreamData
 		if err := json.Unmarshal([]byte(dataStr), &upstreamData); err != nil {
 			debugLog("SSE数据解析失败: %v", err)
@@ -1618,11 +1712,11 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 				ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
-				Model:   MODEL_NAME,
+				Model:   originalModelID, // 使用原始模型ID
 				Choices: []Choice{{Index: 0, Delta: Delta{}, FinishReason: "stop"}},
 			}
 			writeSSEChunk(w, endChunk)
-			fmt.Fprintf(w, "data: [DONE]\n\n")
+			fmt.Fprintf(w, "data: [DONE]\n")
 			flusher.Flush()
 			break
 		}
@@ -1642,7 +1736,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 					ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 					Object:  "chat.completion.chunk",
 					Created: time.Now().Unix(),
-					Model:   MODEL_NAME,
+					Model:   originalModelID, // 使用原始模型ID
 					Choices: []Choice{
 						{
 							Index: 0,
@@ -1663,7 +1757,7 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 				ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
-				Model:   MODEL_NAME,
+				Model:   originalModelID, // 使用原始模型ID
 				Choices: []Choice{
 					{
 						Index:        0,
@@ -1674,15 +1768,13 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 			}
 			writeSSEChunk(w, endChunk)
 			flusher.Flush()
-
 			// 发送[DONE]
-			fmt.Fprintf(w, "data: [DONE]\n\n")
+			fmt.Fprintf(w, "data: [DONE]\n")
 			flusher.Flush()
 			debugLog("流式响应完成，共处理%d行", lineCount)
 			break
 		}
 	}
-
 	if err := scanner.Err(); err != nil {
 		debugLog("扫描器错误: %v", err)
 	}
@@ -1695,12 +1787,12 @@ func handleStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequ
 
 func writeSSEChunk(w http.ResponseWriter, chunk OpenAIResponse) {
 	data, _ := json.Marshal(chunk)
-	fmt.Fprintf(w, "data: %s\n\n", data)
+	fmt.Fprintf(w, "data: %s\n", data)
 }
 
-func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequest, chatID string, authToken string, startTime time.Time, path string, clientIP, userAgent string) {
-	debugLog("开始处理非流式响应 (chat_id=%s)", chatID)
-
+// 修改 handleNonStreamResponseWithIDs 函数，增加原始模型ID参数
+func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamRequest, chatID string, authToken string, startTime time.Time, path string, clientIP, userAgent string, originalModelID string) { // 增加 originalModelID 参数
+	debugLog("开始处理非流式响应 (chat_id=%s, original_model=%s)", chatID, originalModelID)
 	resp, err := callUpstreamWithHeaders(upstreamReq, chatID, authToken)
 	if err != nil {
 		debugLog("调用上游失败: %v", err)
@@ -1712,7 +1804,6 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 		return
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		debugLog("上游返回错误状态: %d", resp.StatusCode)
 		// 读取错误响应体
@@ -1732,23 +1823,19 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 	var fullContent strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
 	debugLog("开始收集完整响应内容")
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
-
 		dataStr := strings.TrimPrefix(line, "data: ")
 		if dataStr == "" {
 			continue
 		}
-
 		var upstreamData UpstreamData
 		if err := json.Unmarshal([]byte(dataStr), &upstreamData); err != nil {
 			continue
 		}
-
 		if upstreamData.Data.DeltaContent != "" {
 			out := upstreamData.Data.DeltaContent
 			if upstreamData.Data.Phase == "thinking" {
@@ -1768,7 +1855,7 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 						s = strings.ReplaceAll(s, "</details>", "")
 					}
 					s = strings.TrimPrefix(s, "> ")
-					s = strings.ReplaceAll(s, "\n> ", "\n")
+					s = strings.ReplaceAll(s, "\n> ", "\n") // <--- 修正换行符
 					return strings.TrimSpace(s)
 				}(out)
 			}
@@ -1776,22 +1863,20 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 				fullContent.WriteString(out)
 			}
 		}
-
 		if upstreamData.Data.Done || upstreamData.Data.Phase == "done" {
 			debugLog("检测到完成信号，停止收集")
 			break
 		}
 	}
-
 	finalContent := fullContent.String()
 	debugLog("内容收集完成，最终长度: %d", len(finalContent))
 
-	// 构造完整响应
+	// 构造完整响应，使用原始模型ID
 	response := OpenAIResponse{
 		ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
-		Model:   MODEL_NAME,
+		Model:   originalModelID, // 使用原始模型ID
 		Choices: []Choice{
 			{
 				Index: 0,
@@ -1808,7 +1893,6 @@ func handleNonStreamResponseWithIDs(w http.ResponseWriter, upstreamReq UpstreamR
 			TotalTokens:      0,
 		},
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 	debugLog("非流式响应发送完成")
