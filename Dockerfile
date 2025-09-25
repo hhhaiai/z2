@@ -13,9 +13,9 @@ WORKDIR /app
 COPY --from=builder /app/main .
 
 # Labels
-LABEL maintainer="Z2 Contributors"
-LABEL description="Z2 - Z.ai OpenAI兼容API代理"
-LABEL version="1.0.0"
+LABEL maintainer="Z2"
+LABEL description="Z2 兼容API代理"
+LABEL version="1.0.2"
 
 # Expose port
 EXPOSE 7860
