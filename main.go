@@ -547,6 +547,7 @@ func main() {
 	http.HandleFunc("/hf/v1/chat/completions", handleChatCompletions)
 
 	log.Printf("OpenAI兼容API服务器启动在端口%s", PORT)
+	log.Printf("本地访问: http://localhost%s", PORT)
 	log.Printf("模型: %s", MODEL_NAME)
 	log.Printf("上游: %s", UPSTREAM_URL)
 	log.Printf("Debug模式: %v", DEBUG_MODE)
