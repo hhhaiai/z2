@@ -543,6 +543,7 @@ func main() {
 	// 备选路径
 	http.HandleFunc("/api/v1/models", handleModels)
 	http.HandleFunc("/api/v1/chat/completions", handleChatCompletions)
+
 	http.HandleFunc("/hf/v1/models", handleModels)
 	http.HandleFunc("/hf/v1/chat/completions", handleChatCompletions)
 
