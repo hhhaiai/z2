@@ -4,18 +4,18 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main .
+RUN CGO_ENABLED=0 go build -o main .
 
 # Final stage
 FROM alpine:latest
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates
 WORKDIR /app
 COPY --from=builder /app/main .
 
 # Labels
 LABEL maintainer="Z2"
-LABEL description="Z2 兼容API代理"
-LABEL version="1.0.2"
+LABEL description="Z2 API"
+LABEL version="1.0.3"
 
 # Expose port
 EXPOSE 7860
