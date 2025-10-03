@@ -80,6 +80,9 @@ jobs:
         tags: ${{ steps.meta.outputs.tags }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        # --- THIS IS THE ADDED/CHANGED PART ---
+        build-args: |
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
 
     - name: Create Manifest List and Push
       if: startsWith(github.ref, 'refs/tags/v') && matrix.suffix == ''

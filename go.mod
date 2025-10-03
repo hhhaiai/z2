@@ -2,6 +2,8 @@ module z2
 
 go 1.24
 
+toolchain go1.24.1
+
 require (
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327 // indirect
 	github.com/chromedp/chromedp v0.14.1 // indirect
