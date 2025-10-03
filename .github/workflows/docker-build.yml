@@ -29,8 +29,6 @@ jobs:
             platform: linux/amd64
           - arch: arm64
             platform: linux/arm64
-          - arch: armv7
-            platform: linux/arm/v7
 
     steps:
       - name: Checkout Repository
@@ -128,7 +126,6 @@ jobs:
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-amd64:${{ steps.version.outputs.version }} \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-arm64:${{ steps.version.outputs.version }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-armv7:${{ steps.version.outputs.version }}
 
       - name: Inspect Manifest
         run: |
