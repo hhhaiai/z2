@@ -15,7 +15,7 @@ COPY --from=builder /app/main .
 # Labels
 LABEL maintainer="Z2"
 LABEL description="Z2 API"
-LABEL version="1.0.3"
+LABEL version="1.0.4"
 
 # Expose port
 EXPOSE 7860
