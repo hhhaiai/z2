@@ -1433,6 +1433,31 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// 总结多条消息为一条上下文信息
+func summarizeMessages(messages []Message) Message {
+	// 构建消息摘要文本
+	var summaryBuilder strings.Builder
+	summaryBuilder.WriteString("以下是前30轮对话的总结：\n\n")
+
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			summaryBuilder.WriteString("系统提示：")
+		} else if msg.Role == "user" {
+			summaryBuilder.WriteString("用户：")
+		} else if msg.Role == "assistant" {
+			summaryBuilder.WriteString("助手：")
+		}
+		summaryBuilder.WriteString(msg.Content)
+		summaryBuilder.WriteString("\n\n")
+	}
+
+	// 生成最终的系统消息作为上下文摘要
+	return Message{
+		Role:    "system",
+		Content: summaryBuilder.String() + "请基于以上对话历史，继续回复用户的最新问题。",
+	}
+}
+
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	path := r.URL.Path
@@ -1502,7 +1527,20 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		debugLog("客户端未指定stream参数，使用默认值: %v", DEFAULT_STREAM)
 	}
 
-	debugLog("请求解析成功 - 模型: %s, 流式: %v, 消息数: %d", req.Model, req.Stream, len(req.Messages))
+	// 处理对话次数超限情况：超过30次自动总结
+	var processedMessages []Message
+	if len(req.Messages) > 30 {
+		debugLog("对话次数超过30次，自动进行总结")
+		// 总结前30条消息
+		summaryMessage := summarizeMessages(req.Messages[:30])
+		// 保留后面的消息
+		processedMessages = append([]Message{summaryMessage}, req.Messages[30:]...)
+		debugLog("总结完成，消息数从%d减少到%d", len(req.Messages), len(processedMessages))
+	} else {
+		processedMessages = req.Messages
+	}
+
+	debugLog("请求解析成功 - 模型: %s, 流式: %v, 消息数: %d", req.Model, req.Stream, len(processedMessages))
 
 	// 生成会话相关ID
 	chatID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix())
@@ -1518,7 +1556,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ChatID:   chatID,
 		ID:       msgID,
 		Model:    getUpstreamModelID(req.Model), // 使用用户请求中的模型名称
-		Messages: req.Messages,
+		Messages: processedMessages, // 使用处理后的消息列表
 		Params:   map[string]interface{}{},
 		Features: map[string]interface{}{
 			"enable_thinking": enableThinking,
