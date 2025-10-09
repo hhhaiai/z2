@@ -3,13 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -18,8 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // 配置变量（从环境变量读取）
@@ -386,14 +381,6 @@ func getUpstreamModelID(modelName string) string {
 	switch modelName {
 	case "GLM-4.6":
 		return "GLM-4-6-API-V1" // 使用官方API的真实模型名称
-	case "GLM-4.5":
-		return "0727-360B-API"
-	case "GLM-4.5-Thinking":
-		return "0727-360B-API"
-	case "GLM-4.5-Search":
-		return "0727-360B-API"
-	case "GLM-4.6-Thinking":
-		return "GLM-4-6-API-V1"
 	default:
 		debugLog("未知模型名称: %s，使用GLM-4.6作为默认", modelName)
 		return "GLM-4-6-API-V1" // 默认使用GLM-4.6
@@ -402,50 +389,39 @@ func getUpstreamModelID(modelName string) string {
 
 // 获取匿名token（每次对话使用不同token，避免共享记忆）
 func getAnonymousToken() (string, error) {
-	tokenURL := ORIGIN_BASE + "/api/v1/auths/"
-	debugLog("获取匿名token: %s", tokenURL)
-
 	client := &http.Client{Timeout: AUTH_TOKEN_TIMEOUT * time.Second}
-	req, err := http.NewRequest("GET", tokenURL, nil)
+	req, err := http.NewRequest("GET", ORIGIN_BASE+"/api/v1/auths/", nil)
 	if err != nil {
-		debugLog("创建获取匿名token请求失败: %v", err)
 		return "", err
 	}
-
+	// 伪装浏览器头
+	req.Header.Set("User-Agent", BROWSER_UA)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("User-Agent", BROWSER_UA)
+	req.Header.Set("X-FE-Version", X_FE_VERSION)
+	req.Header.Set("sec-ch-ua", SEC_CH_UA)
+	req.Header.Set("sec-ch-ua-mobile", SEC_CH_UA_MOB)
+	req.Header.Set("sec-ch-ua-platform", SEC_CH_UA_PLAT)
+	req.Header.Set("Origin", ORIGIN_BASE)
 	req.Header.Set("Referer", ORIGIN_BASE+"/")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		debugLog("获取匿名token请求失败: %v", err)
 		return "", err
 	}
 	defer resp.Body.Close()
-
-	debugLog("获取匿名token响应状态: %d", resp.StatusCode)
-
 	if resp.StatusCode != http.StatusOK {
-		debugLog("获取匿名token失败: 状态码 %d", resp.StatusCode)
-		return "", fmt.Errorf("获取匿名token失败: 状态码 %d", resp.StatusCode)
+		return "", fmt.Errorf("anon token status=%d", resp.StatusCode)
 	}
-
 	var body struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		bodyContent, _ := ioutil.ReadAll(resp.Body)
-		debugLog("解析匿名token响应失败: %v, 响应内容: %s", err, string(bodyContent))
 		return "", err
 	}
-
 	if body.Token == "" {
-		debugLog("匿名token为空")
 		return "", fmt.Errorf("anon token empty")
 	}
-
-	debugLog("成功获取匿名token")
 	return body.Token, nil
 }
 
@@ -1508,16 +1484,21 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	chatID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), time.Now().Unix())
 	msgID := fmt.Sprintf("%d", time.Now().UnixNano())
 
-	// 决定是否启用思考功能：根据模型名称判断
-	enableThinking := strings.Contains(strings.ToLower(req.Model), "thinking")
-	debugLog("根据模型名称启用思考功能: %v (模型: %s)", enableThinking, req.Model)
+	// 决定是否启用思考功能：优先使用请求参数，其次使用环境变量
+	enableThinking := ENABLE_THINKING // 默认使用环境变量值
+	if req.EnableThinking != nil {
+		enableThinking = *req.EnableThinking
+		debugLog("使用请求参数中的思考功能设置: %v", enableThinking)
+	} else {
+		debugLog("使用环境变量中的思考功能设置: %v", enableThinking)
+	}
 
 	// 构造上游请求
 	upstreamReq := UpstreamRequest{
 		Stream:   true, // 总是使用流式从上游获取
 		ChatID:   chatID,
 		ID:       msgID,
-		Model:    getUpstreamModelID(req.Model), // 使用用户请求中的模型名称
+		Model:    getUpstreamModelID(MODEL_NAME), // 根据模型名称获取上游实际模型ID
 		Messages: req.Messages,
 		Params:   map[string]interface{}{},
 		Features: map[string]interface{}{
@@ -1532,7 +1513,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			ID      string `json:"id"`
 			Name    string `json:"name"`
 			OwnedBy string `json:"owned_by"`
-		}{ID: getUpstreamModelID(req.Model), Name: req.Model, OwnedBy: "openai"},
+		}{ID: getUpstreamModelID(MODEL_NAME), Name: MODEL_NAME, OwnedBy: "openai"},
 		ToolServers: []string{},
 		Variables: map[string]string{
 			"{{USER_NAME}}":        "User",
@@ -1572,73 +1553,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// 从JWT token中提取user_id
-func extractUserIDFromToken(token string) string {
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return "guest"
-	}
-
-	// Base64解码payload部分
-	payloadRaw := parts[1]
-	// 添加缺失的padding
-	padding := "="
-	numPadding := (-len(payloadRaw)) % 4
-	if numPadding > 0 {
-		padding = strings.Repeat("=", numPadding)
-	}
-
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadRaw + padding)
-	if err != nil {
-		debugLog("JWT payload解码失败: %v", err)
-		return "guest"
-	}
-
-	// 解析JSON payload
-	var payload map[string]interface{}
-	err = json.Unmarshal(payloadBytes, &payload)
-	if err != nil {
-		debugLog("JWT payload解析失败: %v", err)
-		return "guest"
-	}
-
-	// 尝试多个可能的user_id字段
-	userIDKeys := []string{"id", "user_id", "uid", "sub"}
-	for _, key := range userIDKeys {
-		if val, exists := payload[key]; exists && val != nil {
-			// 将值转换为字符串
-			return fmt.Sprintf("%v", val)
-		}
-	}
-
-	return "guest"
-}
-
-// 生成双层HMAC-SHA256签名
-func generateSignature(messageText string, requestID string, timestampMs int64, userID string) string {
-	signingSecret := "junjie" // Z.AI的默认签名密钥
-
-	// 计算时间窗口索引（5分钟窗口）
-	windowIndex := timestampMs / (5 * 60 * 1000)
-
-	// Layer1: 派生密钥
-	rootKey := []byte(signingSecret)
-	h := hmac.New(sha256.New, rootKey)
-	h.Write([]byte(fmt.Sprintf("%d", windowIndex)))
-	derivedHex := fmt.Sprintf("%x", h.Sum(nil))
-
-	// Layer2: 生成签名
-	canonicalString := fmt.Sprintf(
-		"requestId,%s,timestamp,%d,user_id,%s|%s|%d",
-		requestID, timestampMs, userID, messageText, timestampMs,
-	)
-	h2 := hmac.New(sha256.New, []byte(derivedHex))
-	h2.Write([]byte(canonicalString))
-	signature := fmt.Sprintf("%x", h2.Sum(nil))
-
-	return signature
-}
-
 func callUpstreamWithHeaders(upstreamReq UpstreamRequest, refererChatID string, authToken string) (*http.Response, error) {
 	reqBody, err := json.Marshal(upstreamReq)
 	if err != nil {
@@ -1648,37 +1562,36 @@ func callUpstreamWithHeaders(upstreamReq UpstreamRequest, refererChatID string, 
 
 	// 构建带URL参数的完整URL
 	baseURL := UPSTREAM_URL
-	timestampMs := time.Now().UnixMilli()
+	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
 
-	// 生成UUID
-	requestID := uuid.New().String()
-	userID := extractUserIDFromToken(authToken)
+	// 生成UUID (简化版，使用crypto/rand会更好)
+	requestID := fmt.Sprintf("%x-%x-%x-%x-%x",
+		time.Now().UnixNano(), time.Now().Unix(),
+		time.Now().Nanosecond(), time.Now().Second(), time.Now().Minute())
+	userID := fmt.Sprintf("%x-%x-%x-%x-%x",
+		time.Now().Unix(), time.Now().Nanosecond(),
+		time.Now().Second(), time.Now().Minute(), time.Now().Hour())
 
-	// 提取最后一条用户消息用于签名
-	lastUserMessage := ""
-	if len(upstreamReq.Messages) > 0 {
-		for i := len(upstreamReq.Messages) - 1; i >= 0; i-- {
-			if upstreamReq.Messages[i].Role == "user" {
-				lastUserMessage = upstreamReq.Messages[i].Content
-				break
-			}
-		}
-	}
-
-	// 生成签名
-	signature := generateSignature(lastUserMessage, requestID, timestampMs, userID)
-
-	// 构建URL参数
-	queryParams := url.Values{}
-	queryParams.Set("timestamp", fmt.Sprintf("%d", timestampMs))
-	queryParams.Set("requestId", requestID)
-	queryParams.Set("user_id", userID)
-	queryParams.Set("token", authToken)
-	queryParams.Set("current_url", ORIGIN_BASE+"/c/"+refererChatID)
-	queryParams.Set("pathname", fmt.Sprintf("/c/%s", refererChatID))
-	queryParams.Set("signature_timestamp", fmt.Sprintf("%d", timestampMs))
-
-	fullURL := fmt.Sprintf("%s?%s", baseURL, queryParams.Encode())
+	// 构建URL参数 - 添加所有必要的指纹参数
+	fullURL := fmt.Sprintf("%s?timestamp=%s&requestId=%s&user_id=%s&version=0.0.1&platform=web&token=%s"+
+		"&user_agent=%s&language=zh-CN&languages=zh-CN,zh&timezone=Asia/Shanghai"+
+		"&cookie_enabled=true&screen_width=1680&screen_height=1050&screen_resolution=1680x1050"+
+		"&viewport_height=812&viewport_width=1087&viewport_size=1087x812"+
+		"&color_depth=30&pixel_ratio=2"+
+		"&current_url=%s&pathname=/c/%s&search=&hash="+
+		"&host=chat.z.ai&hostname=chat.z.ai&protocol=https:&referrer="+
+		"&title=%s"+
+		"&timezone_offset=-480&local_time=%s&utc_time=%s"+
+		"&is_mobile=false&is_touch=false&max_touch_points=0"+
+		"&browser_name=Chrome&os_name=Mac+OS&signature_timestamp=%s",
+		baseURL, timestamp, requestID, userID, authToken,
+		url.QueryEscape(BROWSER_UA),
+		url.QueryEscape(ORIGIN_BASE+"/c/"+refererChatID), refererChatID,
+		url.QueryEscape("Z.ai Chat - Free AI powered by GLM-4.6"),
+		url.QueryEscape(time.Now().Format("2006-01-02T15:04:05.000Z")),
+		url.QueryEscape(time.Now().UTC().Format(time.RFC1123)),
+		timestamp,
+	)
 
 	debugLog("调用上游API: %s", fullURL)
 	debugLog("上游请求体: %s", string(reqBody))
@@ -1689,16 +1602,31 @@ func callUpstreamWithHeaders(upstreamReq UpstreamRequest, refererChatID string, 
 		return nil, err
 	}
 
-	// 设置请求头
+	// 生成 X-Signature - 基于请求体的 SHA-256 哈希（426错误修复）
+	hash := sha256.Sum256(reqBody)
+	signature := fmt.Sprintf("%x", hash)
+
+	debugLog("生成签名: %s (基于请求体SHA256)", signature)
+
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "zh-CN")
 	req.Header.Set("User-Agent", BROWSER_UA)
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("Authorization", "Bearer "+authToken)
+	req.Header.Set("sec-ch-ua", SEC_CH_UA)
+	req.Header.Set("sec-ch-ua-mobile", SEC_CH_UA_MOB)
+	req.Header.Set("sec-ch-ua-platform", SEC_CH_UA_PLAT)
+	req.Header.Set("X-FE-Version", X_FE_VERSION)
 	req.Header.Set("X-Signature", signature)
-	req.Header.Set("X-FE-Version", "prod-fe-1.0.69")
 	req.Header.Set("Origin", ORIGIN_BASE)
 	req.Header.Set("Referer", ORIGIN_BASE+"/c/"+refererChatID)
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+
+	// 添加Cookie
+	req.Header.Set("Cookie", fmt.Sprintf("token=%s", authToken))
 
 	client := &http.Client{Timeout: UPSTREAM_TIMEOUT * time.Second}
 	resp, err := client.Do(req)
