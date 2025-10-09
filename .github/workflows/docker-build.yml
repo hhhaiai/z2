@@ -1,17 +1,16 @@
 name: Build and Publish Docker Image
-
 on:
-  # 当推送带有 'v' 前缀的标签时触发 (例如 v1.0.0, v2.1.3)
+  # 当推送标签时触发
   push:
     tags:
-      - 'v*'
+      - '*'
   # 允许在 Actions 页面手动触发
-  workflow_dispatch:
+  workflow_dispatch: true
 
 # 设置环境变量，方便在多个作业中引用
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: z2
 
 jobs:
   # 作业1: 构建并推送各个架构的独立镜像
@@ -20,21 +19,23 @@ jobs:
     permissions:
       contents: read
       packages: write
-    
+
     strategy:
       matrix:
         # 定义要构建的架构平台
         include:
           - arch: amd64
             platform: linux/amd64
-          - arch: arm64
+          - arch: arm64  # 对应ARMv8架构
             platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 获取完整的 Git 历史，以便正确解析版本
+          fetch-depth: 0  # 获取完整的 Git 历史，以便正确解析版本
 
       - name: Setup QEMU for cross-platform
         uses: docker/setup-qemu-action@v3
@@ -45,11 +46,14 @@ jobs:
       - name: Extract Version
         id: version
         run: |
-          # 如果是标签推送，则从标签名中提取版本号
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
+          # 如果是标签推送，则使用标签名作为版本号
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
+            # 如果是手动触发，则使用git commit的前7个字符作为版本名
+            VERSION=$(git rev-parse --short HEAD)
           else
-            # 如果是手动触发，则使用 'latest'
+            # 默认使用latest
             VERSION=latest
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
@@ -82,12 +86,12 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          push: ${{ startsWith(github.ref, 'refs/tags/v') }} # 仅在推送标签时上传
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # --- 关键修复：传递 GITHUB_TOKEN 以访问私有 Go 模块 ---
+          # --- 传递 GITHUB_TOKEN 以访问私有 Go 模块 ---
           build-args: |
             GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
 
@@ -99,9 +103,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-      
-    # 仅在推送标签时运行此作业
-    if: startsWith(github.ref, 'refs/tags/v')
+
+    # 在推送标签或手动触发时运行此作业
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
 
     steps:
       - name: Log in to GitHub Container Registry
@@ -110,24 +114,39 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Extract Version
         id: version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # 如果是标签推送，则使用标签名作为版本号
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
+            # 如果是手动触发，则使用git commit的前7个字符作为版本名
+            VERSION=$(git rev-parse --short HEAD)
+          else
+            VERSION=latest
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version for manifest: $VERSION"
 
       - name: Create Manifest List and Push
         run: |
-          # 使用 buildx imagetools 命令将所有架构的镜像合并成一个多架构镜像
+          # 首先创建只包含amd64架构的镜像，确保z2等于z2-amd64
+          docker buildx imagetools create \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-amd64:${{ steps.version.outputs.version }}
+
+          # 然后创建多架构镜像，使用带-multi后缀的标签
           docker buildx imagetools create \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}-multi \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-amd64:${{ steps.version.outputs.version }} \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-arm64:${{ steps.version.outputs.version }} \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-armv7:${{ steps.version.outputs.version }}
 
       - name: Inspect Manifest
         run: |
           # 检查最终创建的多架构镜像信息
-          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
