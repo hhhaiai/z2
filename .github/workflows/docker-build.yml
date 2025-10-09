@@ -1,152 +1,101 @@
 name: Build and Publish Docker Image
+
 on:
-  # 当推送标签时触发
   push:
     tags:
-      - '*'
-  # 允许在 Actions 页面手动触发
-  workflow_dispatch: 
-
-# 设置环境变量，方便在多个作业中引用
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: z2
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
-  # 作业1: 构建并推送各个架构的独立镜像
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-
     strategy:
       matrix:
-        # 定义要构建的架构平台
         include:
           - arch: amd64
+            suffix: -amd64
             platform: linux/amd64
-          - arch: arm64  # 对应ARMv8架构
+          - arch: arm64
+            suffix: -arm64
             platform: linux/arm64
           - arch: armv7
+            suffix: -armv7
             platform: linux/arm/v7
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # 获取完整的 Git 历史，以便正确解析版本
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: Setup QEMU for cross-platform
-        uses: docker/setup-qemu-action@v3
+    - name: Setup QEMU for cross-platform
+      uses: docker/setup-qemu-action@v3
 
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v3
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: image=moby/buildkit:latest
 
-      - name: Extract Version
-        id: version
-        run: |
-          # 如果是标签推送，则使用标签名作为版本号
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-          elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
-            # 如果是手动触发，则使用git commit的前7个字符作为版本名
-            VERSION=$(git rev-parse --short HEAD)
-          else
-            # 默认使用latest
-            VERSION=latest
-          fi
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
+    - name: Extract version and debug info
+      id: version
+      run: |
+        echo "Event: ${{ github.event_name }}"
+        echo "Ref: ${{ github.ref }}"
+        if [[ $GITHUB_REF == refs/tags/v* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          VERSION=latest
+        fi
+        echo "Extracted version: $VERSION"
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Generate Docker Metadata
+      uses: docker/metadata-action@v5
+      id: meta
+      with:
+        images: |
+          ghcr.io/${{ github.repository }}${{ matrix.suffix }}
+        tags: |
+          type=raw,value=latest
+          type=raw,value=${{ env.VERSION }}
+          type=sha,prefix=sha-,format=short
 
-      - name: Generate Docker Metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # 为每个架构的镜像生成带后缀的标签
-          flavor: |
-            suffix=-${{ matrix.arch }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=sha,prefix=sha-,format=short
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          # --- 传递 GITHUB_TOKEN 以访问私有 Go 模块 ---
-          build-args: |
-            GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+    - name: Build and Push Docker Image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: ${{ matrix.platform }}
+        push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        tags: ${{ steps.meta.outputs.tags }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
-  # 作业2: 创建并推送多架构清单
-  manifest:
-    # 需要在 build 作业成功完成后运行
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    - name: Create Manifest List and Push
+      if: startsWith(github.ref, 'refs/tags/v') && matrix.suffix == ''
+      run: |
+        docker buildx imagetools create -t ghcr.io/${{ github.repository }}:latest \
+          -t ghcr.io/${{ github.repository }}:${{ env.VERSION }} \
+          ghcr.io/${{ github.repository }}-amd64:latest \
+          ghcr.io/${{ github.repository }}-amd64:${{ env.VERSION }} \
+          ghcr.io/${{ github.repository }}-arm64:latest \
+          ghcr.io/${{ github.repository }}-arm64:${{ env.VERSION }} \
+          ghcr.io/${{ github.repository }}-armv7:latest \
+          ghcr.io/${{ github.repository }}-armv7:${{ env.VERSION }}
 
-    # 在推送标签或手动触发时运行此作业
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
-
-    steps:
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Version
-        id: version
-        run: |
-          # 如果是标签推送，则使用标签名作为版本号
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-          elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
-            # 如果是手动触发，则使用git commit的前7个字符作为版本名
-            VERSION=$(git rev-parse --short HEAD)
-          else
-            VERSION=latest
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version for manifest: $VERSION"
-
-      - name: Create Manifest List and Push
-        run: |
-          # 首先创建只包含amd64架构的镜像，确保z2等于z2-amd64
-          docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-amd64:${{ steps.version.outputs.version }}
-
-          # 然后创建多架构镜像，使用带-multi后缀的标签
-          docker buildx imagetools create \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}-multi \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-amd64:${{ steps.version.outputs.version }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-arm64:${{ steps.version.outputs.version }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-armv7:${{ steps.version.outputs.version }}
-
-      - name: Inspect Manifest
-        run: |
-          # 检查最终创建的多架构镜像信息
-          docker buildx imagetools inspect \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+    - name: Build Result Summary
+      if: always()
+      run: |
+        echo "Platform: ${{ matrix.platform }}"
+        echo "Generated tags: ${{ steps.meta.outputs.tags }}"
+        echo "Pushed: ${{ startsWith(github.ref, 'refs/tags/v') }}"
